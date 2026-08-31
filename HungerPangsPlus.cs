@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
 using UnityEngine;
@@ -12,14 +13,18 @@ namespace Schachio.HungerPangsPlus
     {
         public const string PluginGuid = "schachio.hungerpangsplus";
         public const string PluginName = "Hunger Pangs Plus";
-        public const string PluginVersion = "1.5.0";
+        public const string PluginVersion = "1.6.0";
 
         private ConfigEntry<bool> _masterEnabled;
         private ConfigEntry<KeyboardShortcut> _toggleShortcut;
         private ConfigEntry<bool> _autoEat, _autoRefill, _autoHotbar, _autoHarvest, _autoCooking;
+        private ConfigEntry<bool> _clickFoodSlots, _returnRemovedFood;
         private ConfigEntry<float> _baseRadius, _containerRadius, _harvestRadius, _eatInterval, _cookingRadius, _cookingInterval;
+        private ConfigEntry<float> _manualFoodPauseSeconds;
         private ConfigEntry<int> _foodTypesToStock;
-        private float _nextEat, _nextRefill, _nextHarvest, _nextCooking;
+        private float _nextEat, _nextRefill, _nextHarvest, _nextCooking, _autoEatPausedUntil;
+        private Hud _hookedHud;
+        private MethodInfo _updateFoodMethod;
 
         private void Awake()
         {
@@ -27,6 +32,9 @@ namespace Schachio.HungerPangsPlus
             _toggleShortcut=Config.Bind("General","ToggleShortcut",new KeyboardShortcut(KeyCode.F3,KeyCode.LeftAlt),"Keyboard shortcut to toggle all automation on/off. Default: Left Alt + F3.");
             _autoEat=Config.Bind("Auto eat","Enabled",true,"Automatically eat only when Valheim has a free or refreshable food slot.");
             _eatInterval=Config.Bind("Auto eat","CheckIntervalSeconds",1f,"How often auto-eat checks food slots.");
+            _clickFoodSlots=Config.Bind("Auto eat","ClickableActiveFoodSlots",true,"Allow left or right click on an active food icon beside the health bar to remove that food.");
+            _returnRemovedFood=Config.Bind("Auto eat","ReturnRemovedFoodToInventory",true,"Return one removed active food item to the player inventory when a food slot is clicked.");
+            _manualFoodPauseSeconds=Config.Bind("Auto eat","ManualSelectionPauseSeconds",60f,"Pause auto-eating after manually removing an active food. Default: 60 seconds.");
             _autoRefill=Config.Bind("Base refill","Enabled",true,"Refill prepared edible food from nearby accessible containers while at base.");
             _baseRadius=Config.Bind("Base refill","WorkbenchRadius",20f,"Distance from a workbench that counts as base.");
             _containerRadius=Config.Bind("Base refill","ContainerRadius",20f,"Maximum distance to food containers.");
@@ -37,6 +45,7 @@ namespace Schachio.HungerPangsPlus
             _autoCooking=Config.Bind("Auto cooking","Enabled",true,"Automatically collect finished cooking-station food and load compatible raw ingredients from inventory or nearby containers while at base.");
             _cookingRadius=Config.Bind("Auto cooking","CookingStationRadius",12f,"Maximum distance to cooking stations used by auto cooking.");
             _cookingInterval=Config.Bind("Auto cooking","CheckIntervalSeconds",2f,"How often nearby cooking stations are checked.");
+            _updateFoodMethod=typeof(Player).GetMethod("UpdateFood",BindingFlags.Instance|BindingFlags.NonPublic,null,new Type[]{typeof(float),typeof(bool)},null);
             Logger.LogInfo(PluginName+" "+PluginVersion+" loaded");
         }
 
@@ -44,6 +53,8 @@ namespace Schachio.HungerPangsPlus
         {
             Player p=Player.m_localPlayer;
             if(p==null||p.IsDead()) return;
+
+            EnsureFoodSlotHandlers();
 
             if(_toggleShortcut.Value.IsDown())
             {
@@ -69,9 +80,9 @@ namespace Schachio.HungerPangsPlus
                 _nextRefill=now+4f;
                 TryRefill(p);
                 if(_autoHotbar.Value) PutSelectedFoodOnHotbar(p.GetInventory());
-                if(_autoEat.Value) TryAutoEat(p);
+                if(_autoEat.Value&&now>=_autoEatPausedUntil) TryAutoEat(p);
             }
-            if(_autoEat.Value&&now>=_nextEat)
+            if(_autoEat.Value&&now>=_nextEat&&now>=_autoEatPausedUntil)
             {
                 _nextEat=now+Mathf.Max(.25f,_eatInterval.Value);
                 TryAutoEat(p);
@@ -81,6 +92,56 @@ namespace Schachio.HungerPangsPlus
                 _nextHarvest=now+.75f;
                 TryHarvest(p);
             }
+        }
+
+        private void EnsureFoodSlotHandlers()
+        {
+            if(!_clickFoodSlots.Value) return;
+            Hud hud=Hud.instance;
+            if(hud==null||hud==_hookedHud||hud.m_foodIcons==null) return;
+            _hookedHud=hud;
+            for(int i=0;i<hud.m_foodIcons.Length;i++)
+            {
+                if(hud.m_foodIcons[i]==null) continue;
+                UIInputHandler handler=hud.m_foodIcons[i].GetComponent<UIInputHandler>();
+                if(handler==null) handler=hud.m_foodIcons[i].gameObject.AddComponent<UIInputHandler>();
+                int slot=i;
+                handler.m_onLeftClick += delegate(UIInputHandler _) { OnFoodSlotClicked(slot); };
+                handler.m_onRightClick += delegate(UIInputHandler _) { OnFoodSlotClicked(slot); };
+            }
+        }
+
+        private void OnFoodSlotClicked(int slot)
+        {
+            if(!_clickFoodSlots.Value) return;
+            Player p=Player.m_localPlayer;
+            if(p==null||p.IsDead()) return;
+            List<Player.Food> foods=p.GetFoods();
+            if(foods==null||slot<0||slot>=foods.Count) return;
+            Player.Food active=foods[slot];
+            if(active==null||active.m_item==null) return;
+
+            Inventory inv=p.GetInventory();
+            if(_returnRemovedFood.Value&&inv!=null)
+            {
+                ItemDrop.ItemData returned=active.m_item.Clone();
+                returned.m_stack=1;
+                if(!inv.CanAddItem(returned,1))
+                {
+                    try { p.Message(MessageHud.MessageType.Center,PluginName+": Inventar voll - Essen bleibt aktiv"); } catch { }
+                    return;
+                }
+                if(!inv.AddItem(returned)) return;
+            }
+
+            string foodName=active.m_item.m_shared!=null?active.m_item.m_shared.m_name:"Essen";
+            foods.RemoveAt(slot);
+            try { if(_updateFoodMethod!=null) _updateFoodMethod.Invoke(p,new object[]{0f,true}); } catch(Exception e) { Logger.LogDebug("Food refresh skipped: "+e.Message); }
+
+            float pause=Mathf.Max(0f,_manualFoodPauseSeconds.Value);
+            _autoEatPausedUntil=Time.time+pause;
+            _nextEat=_autoEatPausedUntil;
+            try { p.Message(MessageHud.MessageType.Center,PluginName+": "+foodName+" entfernt - Auto-Essen pausiert "+Mathf.CeilToInt(pause)+" Sek."); } catch { }
         }
 
         private static bool IsFood(ItemDrop.ItemData i)
@@ -175,17 +236,10 @@ namespace Schachio.HungerPangsPlus
 
             foreach(CookingStation station in stations)
             {
-                try
-                {
-                    station.Interact(p,false,false);
-                }
-                catch(Exception e)
-                {
-                    Logger.LogDebug("Auto-cooking collect skipped: "+e.Message);
-                }
+                try { station.Interact(p,false,false); }
+                catch(Exception e) { Logger.LogDebug("Auto-cooking collect skipped: "+e.Message); }
 
                 if(station.m_conversion==null||station.m_conversion.Count==0) continue;
-
                 foreach(CookingStation.ItemConversion conversion in station.m_conversion)
                 {
                     if(conversion==null||conversion.m_from==null||conversion.m_from.m_itemData==null||conversion.m_from.m_itemData.m_shared==null) continue;
@@ -197,15 +251,8 @@ namespace Schachio.HungerPangsPlus
                         raw=FindInventoryItem(inv,rawName);
                     }
                     if(raw==null) continue;
-
-                    try
-                    {
-                        if(station.UseItem(p,raw)) break;
-                    }
-                    catch(Exception e)
-                    {
-                        Logger.LogDebug("Auto-cooking load skipped: "+e.Message);
-                    }
+                    try { if(station.UseItem(p,raw)) break; }
+                    catch(Exception e) { Logger.LogDebug("Auto-cooking load skipped: "+e.Message); }
                 }
             }
         }
