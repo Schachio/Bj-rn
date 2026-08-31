@@ -13,7 +13,7 @@ namespace Schachio.HungerPangsPlus
     {
         public const string PluginGuid = "schachio.hungerpangsplus";
         public const string PluginName = "Hunger Pangs Plus";
-        public const string PluginVersion = "1.6.0";
+        public const string PluginVersion = "1.6.1";
 
         private ConfigEntry<bool> _masterEnabled;
         private ConfigEntry<KeyboardShortcut> _toggleShortcut;
@@ -23,7 +23,6 @@ namespace Schachio.HungerPangsPlus
         private ConfigEntry<float> _manualFoodPauseSeconds;
         private ConfigEntry<int> _foodTypesToStock;
         private float _nextEat, _nextRefill, _nextHarvest, _nextCooking, _autoEatPausedUntil;
-        private Hud _hookedHud;
         private MethodInfo _updateFoodMethod;
         private FieldInfo _foodIconsField;
 
@@ -56,7 +55,7 @@ namespace Schachio.HungerPangsPlus
             Player p=Player.m_localPlayer;
             if(p==null||p.IsDead()) return;
 
-            EnsureFoodSlotHandlers();
+            HandleFoodSlotMouseClick();
 
             if(_toggleShortcut.Value.IsDown())
             {
@@ -96,23 +95,30 @@ namespace Schachio.HungerPangsPlus
             }
         }
 
-        private void EnsureFoodSlotHandlers()
+        private void HandleFoodSlotMouseClick()
         {
             if(!_clickFoodSlots.Value) return;
+            if(!Input.GetMouseButtonDown(0)&&!Input.GetMouseButtonDown(1)) return;
             Hud hud=Hud.instance;
-            if(hud==null||hud==_hookedHud||_foodIconsField==null) return;
+            if(hud==null||_foodIconsField==null) return;
             Array icons=_foodIconsField.GetValue(hud) as Array;
             if(icons==null) return;
-            _hookedHud=hud;
+
+            Vector2 mouse=Input.mousePosition;
             for(int i=0;i<icons.Length;i++)
             {
                 Component icon=icons.GetValue(i) as Component;
-                if(icon==null) continue;
-                UIInputHandler handler=icon.GetComponent<UIInputHandler>();
-                if(handler==null) handler=icon.gameObject.AddComponent<UIInputHandler>();
-                int slot=i;
-                handler.m_onLeftClick += delegate(UIInputHandler _) { OnFoodSlotClicked(slot); };
-                handler.m_onRightClick += delegate(UIInputHandler _) { OnFoodSlotClicked(slot); };
+                if(icon==null||!icon.gameObject.activeInHierarchy) continue;
+                RectTransform rect=icon.transform as RectTransform;
+                if(rect==null) continue;
+                Canvas canvas=icon.GetComponentInParent<Canvas>();
+                Camera cam=null;
+                if(canvas!=null&&canvas.renderMode!=RenderMode.ScreenSpaceOverlay) cam=canvas.worldCamera;
+                if(RectTransformUtility.RectangleContainsScreenPoint(rect,mouse,cam))
+                {
+                    OnFoodSlotClicked(i);
+                    return;
+                }
             }
         }
 
