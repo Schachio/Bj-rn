@@ -9,6 +9,5 @@
     <PackageReference Include="BepInEx.Core" Version="5.4.21" />
     <PackageReference Include="ValheimGameLibs" Version="0.221.4" />
     <PackageReference Include="UnityEngine.Modules" Version="2021.3.33" PrivateAssets="all" />
-    <PackageReference Include="UnityEngine.UI" Version="1.0.0" PrivateAssets="all" />
   </ItemGroup>
 </Project>
