@@ -12,20 +12,26 @@ namespace Schachio.HungerPangsPlus
     {
         public const string PluginGuid = "schachio.hungerpangsplus";
         public const string PluginName = "Hunger Pangs Plus";
-        public const string PluginVersion = "1.3.0";
-        private ConfigEntry<bool> _autoEat, _autoRefill, _autoHarvest;
+        public const string PluginVersion = "1.4.0";
+
+        private ConfigEntry<bool> _masterEnabled;
+        private ConfigEntry<KeyboardShortcut> _toggleShortcut;
+        private ConfigEntry<bool> _autoEat, _autoRefill, _autoHotbar, _autoHarvest;
         private ConfigEntry<float> _baseRadius, _containerRadius, _harvestRadius, _eatInterval;
         private ConfigEntry<int> _foodTypesToStock;
         private float _nextEat, _nextRefill, _nextHarvest;
 
         private void Awake()
         {
+            _masterEnabled=Config.Bind("General","AutomationEnabled",true,"Master switch for all Hunger Pangs Plus automation.");
+            _toggleShortcut=Config.Bind("General","ToggleShortcut",new KeyboardShortcut(KeyCode.F3,KeyCode.LeftAlt),"Keyboard shortcut to toggle all automation on/off. Default: Left Alt + F3.");
             _autoEat=Config.Bind("Auto eat","Enabled",true,"Automatically eat only when Valheim has a free or refreshable food slot.");
             _eatInterval=Config.Bind("Auto eat","CheckIntervalSeconds",1f,"How often auto-eat checks food slots.");
             _autoRefill=Config.Bind("Base refill","Enabled",true,"Refill prepared edible food from nearby accessible containers while at base.");
             _baseRadius=Config.Bind("Base refill","WorkbenchRadius",20f,"Distance from a workbench that counts as base.");
             _containerRadius=Config.Bind("Base refill","ContainerRadius",20f,"Maximum distance to food containers.");
             _foodTypesToStock=Config.Bind("Base refill","FoodTypesToStock",3,"How many different food types to pull from nearby containers.");
+            _autoHotbar=Config.Bind("Hotbar","Enabled",true,"Place the selected food stacks into free hotbar slots without replacing existing items.");
             _autoHarvest=Config.Bind("Travel harvest","Enabled",true,"Harvest only edible Pickable plants while outside base.");
             _harvestRadius=Config.Bind("Travel harvest","Radius",3.5f,"Maximum automatic edible-plant harvesting distance.");
             Logger.LogInfo(PluginName+" "+PluginVersion+" loaded");
@@ -35,13 +41,24 @@ namespace Schachio.HungerPangsPlus
         {
             Player p=Player.m_localPlayer;
             if(p==null||p.IsDead()) return;
+
+            if(_toggleShortcut.Value.IsDown())
+            {
+                _masterEnabled.Value=!_masterEnabled.Value;
+                Config.Save();
+                try { p.Message(MessageHud.MessageType.Center, PluginName+": Automatik "+(_masterEnabled.Value?"AN":"AUS")); }
+                catch { }
+            }
+
+            if(!_masterEnabled.Value) return;
+
             float now=Time.time;
             bool atBase=IsAtBase(p.transform.position);
             if(atBase&&_autoRefill.Value&&now>=_nextRefill)
             {
                 _nextRefill=now+4f;
                 TryRefill(p);
-                PutSelectedFoodOnHotbar(p.GetInventory());
+                if(_autoHotbar.Value) PutSelectedFoodOnHotbar(p.GetInventory());
                 if(_autoEat.Value) TryAutoEat(p);
             }
             if(_autoEat.Value&&now>=_nextEat)
