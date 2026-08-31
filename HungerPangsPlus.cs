@@ -25,6 +25,7 @@ namespace Schachio.HungerPangsPlus
         private float _nextEat, _nextRefill, _nextHarvest, _nextCooking, _autoEatPausedUntil;
         private Hud _hookedHud;
         private MethodInfo _updateFoodMethod;
+        private FieldInfo _foodIconsField;
 
         private void Awake()
         {
@@ -46,6 +47,7 @@ namespace Schachio.HungerPangsPlus
             _cookingRadius=Config.Bind("Auto cooking","CookingStationRadius",12f,"Maximum distance to cooking stations used by auto cooking.");
             _cookingInterval=Config.Bind("Auto cooking","CheckIntervalSeconds",2f,"How often nearby cooking stations are checked.");
             _updateFoodMethod=typeof(Player).GetMethod("UpdateFood",BindingFlags.Instance|BindingFlags.NonPublic,null,new Type[]{typeof(float),typeof(bool)},null);
+            _foodIconsField=typeof(Hud).GetField("m_foodIcons",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic);
             Logger.LogInfo(PluginName+" "+PluginVersion+" loaded");
         }
 
@@ -98,13 +100,16 @@ namespace Schachio.HungerPangsPlus
         {
             if(!_clickFoodSlots.Value) return;
             Hud hud=Hud.instance;
-            if(hud==null||hud==_hookedHud||hud.m_foodIcons==null) return;
+            if(hud==null||hud==_hookedHud||_foodIconsField==null) return;
+            Array icons=_foodIconsField.GetValue(hud) as Array;
+            if(icons==null) return;
             _hookedHud=hud;
-            for(int i=0;i<hud.m_foodIcons.Length;i++)
+            for(int i=0;i<icons.Length;i++)
             {
-                if(hud.m_foodIcons[i]==null) continue;
-                UIInputHandler handler=hud.m_foodIcons[i].GetComponent<UIInputHandler>();
-                if(handler==null) handler=hud.m_foodIcons[i].gameObject.AddComponent<UIInputHandler>();
+                Component icon=icons.GetValue(i) as Component;
+                if(icon==null) continue;
+                UIInputHandler handler=icon.GetComponent<UIInputHandler>();
+                if(handler==null) handler=icon.gameObject.AddComponent<UIInputHandler>();
                 int slot=i;
                 handler.m_onLeftClick += delegate(UIInputHandler _) { OnFoodSlotClicked(slot); };
                 handler.m_onRightClick += delegate(UIInputHandler _) { OnFoodSlotClicked(slot); };
