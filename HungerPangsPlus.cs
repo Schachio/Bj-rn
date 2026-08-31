@@ -12,14 +12,14 @@ namespace Schachio.HungerPangsPlus
     {
         public const string PluginGuid = "schachio.hungerpangsplus";
         public const string PluginName = "Hunger Pangs Plus";
-        public const string PluginVersion = "1.4.0";
+        public const string PluginVersion = "1.5.0";
 
         private ConfigEntry<bool> _masterEnabled;
         private ConfigEntry<KeyboardShortcut> _toggleShortcut;
-        private ConfigEntry<bool> _autoEat, _autoRefill, _autoHotbar, _autoHarvest;
-        private ConfigEntry<float> _baseRadius, _containerRadius, _harvestRadius, _eatInterval;
+        private ConfigEntry<bool> _autoEat, _autoRefill, _autoHotbar, _autoHarvest, _autoCooking;
+        private ConfigEntry<float> _baseRadius, _containerRadius, _harvestRadius, _eatInterval, _cookingRadius, _cookingInterval;
         private ConfigEntry<int> _foodTypesToStock;
-        private float _nextEat, _nextRefill, _nextHarvest;
+        private float _nextEat, _nextRefill, _nextHarvest, _nextCooking;
 
         private void Awake()
         {
@@ -34,6 +34,9 @@ namespace Schachio.HungerPangsPlus
             _autoHotbar=Config.Bind("Hotbar","Enabled",true,"Place the selected food stacks into free hotbar slots without replacing existing items.");
             _autoHarvest=Config.Bind("Travel harvest","Enabled",true,"Harvest only edible Pickable plants while outside base.");
             _harvestRadius=Config.Bind("Travel harvest","Radius",3.5f,"Maximum automatic edible-plant harvesting distance.");
+            _autoCooking=Config.Bind("Auto cooking","Enabled",true,"Automatically collect finished cooking-station food and load compatible raw ingredients from inventory or nearby containers while at base.");
+            _cookingRadius=Config.Bind("Auto cooking","CookingStationRadius",12f,"Maximum distance to cooking stations used by auto cooking.");
+            _cookingInterval=Config.Bind("Auto cooking","CheckIntervalSeconds",2f,"How often nearby cooking stations are checked.");
             Logger.LogInfo(PluginName+" "+PluginVersion+" loaded");
         }
 
@@ -54,6 +57,13 @@ namespace Schachio.HungerPangsPlus
 
             float now=Time.time;
             bool atBase=IsAtBase(p.transform.position);
+
+            if(atBase&&_autoCooking.Value&&now>=_nextCooking)
+            {
+                _nextCooking=now+Mathf.Max(.5f,_cookingInterval.Value);
+                TryAutoCooking(p);
+            }
+
             if(atBase&&_autoRefill.Value&&now>=_nextRefill)
             {
                 _nextRefill=now+4f;
@@ -135,20 +145,108 @@ namespace Schachio.HungerPangsPlus
             return false;
         }
 
+        private List<Container> GetNearbyContainers(Player p)
+        {
+            float r=Mathf.Max(1f,_containerRadius.Value);
+            return UnityEngine.Object.FindObjectsOfType<Container>()
+                .Where(c=>c!=null&&c.gameObject!=null&&Vector3.Distance(p.transform.position,c.transform.position)<=r)
+                .OrderBy(c=>Vector3.Distance(p.transform.position,c.transform.position))
+                .ToList();
+        }
+
+        private bool CanAccessContainer(Container c,long playerId)
+        {
+            if(!IsSafeStorage(c)) return false;
+            try { return c.CheckAccess(playerId); }
+            catch { return false; }
+        }
+
+        private void TryAutoCooking(Player p)
+        {
+            Inventory inv=p.GetInventory();
+            if(inv==null) return;
+            long playerId=p.GetPlayerID();
+            List<Container> containers=GetNearbyContainers(p);
+            float radius=Mathf.Max(1f,_cookingRadius.Value);
+            List<CookingStation> stations=UnityEngine.Object.FindObjectsOfType<CookingStation>()
+                .Where(s=>s!=null&&s.gameObject!=null&&Vector3.Distance(p.transform.position,s.transform.position)<=radius)
+                .OrderBy(s=>Vector3.Distance(p.transform.position,s.transform.position))
+                .ToList();
+
+            foreach(CookingStation station in stations)
+            {
+                try
+                {
+                    station.Interact(p,false,false);
+                }
+                catch(Exception e)
+                {
+                    Logger.LogDebug("Auto-cooking collect skipped: "+e.Message);
+                }
+
+                if(station.m_conversion==null||station.m_conversion.Count==0) continue;
+
+                foreach(CookingStation.ItemConversion conversion in station.m_conversion)
+                {
+                    if(conversion==null||conversion.m_from==null||conversion.m_from.m_itemData==null||conversion.m_from.m_itemData.m_shared==null) continue;
+                    string rawName=conversion.m_from.m_itemData.m_shared.m_name;
+                    ItemDrop.ItemData raw=FindInventoryItem(inv,rawName);
+                    if(raw==null)
+                    {
+                        PullOneItemFromContainers(inv,containers,playerId,rawName);
+                        raw=FindInventoryItem(inv,rawName);
+                    }
+                    if(raw==null) continue;
+
+                    try
+                    {
+                        if(station.UseItem(p,raw)) break;
+                    }
+                    catch(Exception e)
+                    {
+                        Logger.LogDebug("Auto-cooking load skipped: "+e.Message);
+                    }
+                }
+            }
+        }
+
+        private static ItemDrop.ItemData FindInventoryItem(Inventory inv,string sharedName)
+        {
+            if(inv==null||string.IsNullOrEmpty(sharedName)) return null;
+            return inv.GetAllItems().FirstOrDefault(i=>i!=null&&i.m_shared!=null&&i.m_shared.m_name==sharedName);
+        }
+
+        private void PullOneItemFromContainers(Inventory target,List<Container> containers,long playerId,string sharedName)
+        {
+            if(target==null||containers==null||string.IsNullOrEmpty(sharedName)) return;
+            foreach(Container c in containers)
+            {
+                if(!CanAccessContainer(c,playerId)) continue;
+                Inventory src=c.GetInventory();
+                if(src==null) continue;
+                ItemDrop.ItemData item=src.GetAllItems().FirstOrDefault(i=>i!=null&&i.m_shared!=null&&i.m_shared.m_name==sharedName&&i.m_stack>0);
+                if(item==null) continue;
+                ItemDrop.ItemData copy=item.Clone();
+                copy.m_stack=1;
+                if(!target.CanAddItem(copy,1)) return;
+                if(target.AddItem(copy))
+                {
+                    src.RemoveItem(item,1);
+                    return;
+                }
+            }
+        }
+
         private void TryRefill(Player p)
         {
             Inventory target=p.GetInventory();
             if(target==null) return;
             long id=p.GetPlayerID();
-            float r=Mathf.Max(1f,_containerRadius.Value);
-            List<Container> cs=UnityEngine.Object.FindObjectsOfType<Container>().Where(c=>c!=null&&c.gameObject!=null&&Vector3.Distance(p.transform.position,c.transform.position)<=r).OrderBy(c=>Vector3.Distance(p.transform.position,c.transform.position)).ToList();
+            List<Container> cs=GetNearbyContainers(p);
             List<ItemDrop.ItemData> foods=new List<ItemDrop.ItemData>();
             foreach(Container c in cs)
             {
-                if(!IsSafeStorage(c)) continue;
-                bool access;
-                try { access=c.CheckAccess(id); } catch { access=false; }
-                if(!access) continue;
+                if(!CanAccessContainer(c,id)) continue;
                 Inventory src=c.GetInventory();
                 if(src!=null) foods.AddRange(src.GetAllItems().Where(IsFood));
             }
@@ -172,10 +270,7 @@ namespace Schachio.HungerPangsPlus
                 foreach(Container c in cs)
                 {
                     if(need<=0) break;
-                    if(!IsSafeStorage(c)) continue;
-                    bool access;
-                    try { access=c.CheckAccess(id); } catch { access=false; }
-                    if(!access) continue;
+                    if(!CanAccessContainer(c,id)) continue;
                     Inventory src=c.GetInventory();
                     if(src==null) continue;
                     foreach(ItemDrop.ItemData item in new List<ItemDrop.ItemData>(src.GetAllItems()))
