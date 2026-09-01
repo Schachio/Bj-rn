@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.1")]
+    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.2")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class HungerPangsPlusSilentMessagesPlugin : BaseUnityPlugin
     {
@@ -45,7 +45,7 @@ namespace Schachio.HungerPangsPlus
             {
                 var method = frame.GetMethod();
                 var type = method != null ? method.DeclaringType : null;
-                if (type == typeof(HungerPangsPlusPlugin))
+                if (type == typeof(HungerPangsPlusPlugin) || type == typeof(ExpandedAutomationPlugin))
                     return true;
             }
 
@@ -53,8 +53,6 @@ namespace Schachio.HungerPangsPlus
         }
     }
 
-    // Suppress messages routed through Character/Player.Message while an automatic
-    // Hunger Pangs Plus action is on the call stack.
     [HarmonyPatch(typeof(Character), "Message", new Type[]
     {
         typeof(MessageHud.MessageType),
@@ -73,9 +71,6 @@ namespace Schachio.HungerPangsPlus
         }
     }
 
-    // Some vanilla failures (notably "$msg_noroom" / "No room in inventory")
-    // are written directly to MessageHud instead of going through Character.Message.
-    // Catch that path too, but only while Hunger Pangs Plus automation caused it.
     [HarmonyPatch(typeof(MessageHud), "ShowMessage", new Type[]
     {
         typeof(MessageHud.MessageType),
