@@ -74,16 +74,16 @@ jobs:
           data['version_number'] = os.environ['VERSION'].strip()
           data['website_url'] = 'https://github.com/Schachio/Bj-rn'
           data['description'] = 'Automatisiert Essen, Kochen, Vorräte, essbare Pflanzen und Schnellleiste in Valheim – mit manuell austauschbaren aktiven Speisen und konfigurierbarer Steuerung.'
-          deps = data.get('dependencies', [])
-          if not any(d.startswith('denikson-BepInExPack_Valheim-') for d in deps):
-              deps.append('denikson-BepInExPack_Valheim-5.4.2333')
+          deps = [d for d in data.get('dependencies', []) if not d.startswith('denikson-BepInExPack_Valheim-')]
+          deps.append('denikson-BepInExPack_Valheim-5.4.2333')
           data['dependencies'] = deps
           manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
           changelog = root / 'CHANGELOG.md'
           old = changelog.read_text(encoding='utf-8-sig') if changelog.exists() else '# Changelog\n'
-          entry = f"\n## {os.environ['VERSION'].strip()}\n\n- {os.environ['CHANGELOG_TEXT'].strip()}\n"
-          if f"## {os.environ['VERSION'].strip()}" not in old:
+          version = os.environ['VERSION'].strip()
+          entry = f"\n## {version}\n\n- {os.environ['CHANGELOG_TEXT'].strip()}\n"
+          if f"## {version}" not in old:
               changelog.write_text('# Changelog\n' + entry + old.removeprefix('# Changelog\n'), encoding='utf-8')
           PY
 
@@ -94,16 +94,17 @@ jobs:
           test -f package/icon.png
           test -f package/BepInEx/plugins/HungerPangsPlus.dll
           python - <<'PY'
-          from PIL import Image
-          im = Image.open('package/icon.png')
-          if im.size != (256, 256):
-              raise SystemExit(f'icon.png must be 256x256, got {im.size}')
-          print('icon.png:', im.size)
+          import struct
+          p = 'package/icon.png'
+          with open(p, 'rb') as f:
+              sig = f.read(24)
+          if sig[:8] != b'\x89PNG\r\n\x1a\n':
+              raise SystemExit('icon.png is not a PNG')
+          width, height = struct.unpack('>II', sig[16:24])
+          if (width, height) != (256, 256):
+              raise SystemExit(f'icon.png must be 256x256, got {width}x{height}')
+          print('icon.png:', width, 'x', height)
           PY
-
-      - name: Install Pillow for validation
-        if: ${{ false }}
-        run: true
 
       - name: Create upload ZIP
         env:
