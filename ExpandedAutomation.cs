@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using BepInEx;
@@ -9,16 +8,16 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.expandedautomation", "Hunger Pangs Plus Expanded Automation", "1.0.0")]
+    [BepInPlugin("schachio.hungerpangsplus.expandedautomation", "Hunger Pangs Plus Expanded Automation", "1.1.0")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class ExpandedAutomationPlugin : BaseUnityPlugin
     {
         private HungerPangsPlusPlugin _main;
         private FieldInfo _foodIconsField;
         private MethodInfo _pickupMethod;
-        private MethodInfo _containerSaveMethod;
         private float _nextFoodCheck;
         private float _nextGroundCheck;
+        private readonly Dictionary<string, float> _pickedFoodReadyAt = new Dictionary<string, float>();
 
         private void Start()
         {
@@ -28,7 +27,6 @@ namespace Schachio.HungerPangsPlus
             if (_pickupMethod == null)
                 _pickupMethod = typeof(ItemDrop).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                     .FirstOrDefault(m => m.Name == "Pickup" && m.GetParameters().Length == 1);
-            _containerSaveMethod = typeof(Container).GetMethod("Save", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             ApplyRequestedDefaults();
         }
 
@@ -61,16 +59,16 @@ namespace Schachio.HungerPangsPlus
             if (p == null || p.IsDead()) return;
 
             float now = Time.time;
+            if (now >= _nextGroundCheck)
+            {
+                _nextGroundCheck = now + 0.5f;
+                TryPickupEdibleGroundItems(p);
+            }
+
             if (now >= _nextFoodCheck)
             {
                 _nextFoodCheck = now + 0.5f;
                 TryFillDynamicFoodSlots(p);
-            }
-
-            if (now >= _nextGroundCheck)
-            {
-                _nextGroundCheck = now + 0.75f;
-                TryPickupEligibleGroundItems(p);
             }
         }
 
@@ -130,20 +128,24 @@ namespace Schachio.HungerPangsPlus
                     .Where(f => f != null && f.m_item != null && f.m_item.m_shared != null)
                     .Select(f => f.m_item.m_shared.m_name));
 
+                float now = Time.time;
                 ItemDrop.ItemData candidate = inv.GetAllItems()
                     .Where(IsFood)
                     .Where(i => i.m_shared != null && !activeNames.Contains(i.m_shared.m_name))
+                    .Where(i => !_pickedFoodReadyAt.ContainsKey(i.m_shared.m_name) || now >= _pickedFoodReadyAt[i.m_shared.m_name])
                     .OrderByDescending(FoodScore)
                     .FirstOrDefault();
 
                 if (candidate == null) break;
 
                 int before = active.Count;
+                string name = candidate.m_shared.m_name;
                 try { p.ConsumeItem(inv, candidate, false); }
                 catch (Exception e) { Logger.LogDebug("Expanded auto-eat skipped: " + e.Message); break; }
 
                 active = p.GetFoods();
                 if (active == null || active.Count <= before) break;
+                _pickedFoodReadyAt.Remove(name);
             }
         }
 
@@ -196,7 +198,6 @@ namespace Schachio.HungerPangsPlus
                     if (inv.AddItem(copy))
                     {
                         src.RemoveItem(source, 1);
-                        TrySave(c);
                         known.Add(name);
                     }
                     break;
@@ -204,7 +205,7 @@ namespace Schachio.HungerPangsPlus
             }
         }
 
-        private void TryPickupEligibleGroundItems(Player p)
+        private void TryPickupEdibleGroundItems(Player p)
         {
             Inventory inv = p.GetInventory();
             if (inv == null || _pickupMethod == null) return;
@@ -213,7 +214,7 @@ namespace Schachio.HungerPangsPlus
             List<ItemDrop> drops = UnityEngine.Object.FindObjectsOfType<ItemDrop>()
                 .Where(d => d != null && d.gameObject != null && d.gameObject.activeInHierarchy && d.m_itemData != null)
                 .Where(d => Vector3.Distance(p.transform.position, d.transform.position) <= radius)
-                .Where(d => IsEligibleGroundItem(d.m_itemData))
+                .Where(d => IsFood(d.m_itemData))
                 .OrderBy(d => Vector3.Distance(p.transform.position, d.transform.position))
                 .ToList();
 
@@ -224,84 +225,11 @@ namespace Schachio.HungerPangsPlus
                 int before = CountBySharedName(inv, sharedName);
 
                 try { _pickupMethod.Invoke(drop, new object[] { p }); }
-                catch (Exception e) { Logger.LogDebug("Ground pickup skipped: " + e.Message); continue; }
+                catch (Exception e) { Logger.LogDebug("Ground food pickup skipped: " + e.Message); continue; }
 
                 int after = CountBySharedName(inv, sharedName);
-                int picked = Math.Max(0, after - before);
-                if (picked <= 0) continue;
-
-                if (IsFoodNameNeededForOpenSlot(p, sharedName))
-                    continue;
-
-                TryStorePickedAmount(p, sharedName, picked);
-            }
-        }
-
-        private bool IsFoodNameNeededForOpenSlot(Player p, string sharedName)
-        {
-            int capacity = GetFoodSlotCapacity(p);
-            List<Player.Food> active = p.GetFoods();
-            if (active == null || active.Count >= capacity) return false;
-
-            Inventory inv = p.GetInventory();
-            ItemDrop.ItemData item = inv != null ? inv.GetAllItems().FirstOrDefault(i => i != null && i.m_shared != null && i.m_shared.m_name == sharedName) : null;
-            if (!IsFood(item)) return false;
-
-            return !active.Any(f => f != null && f.m_item != null && f.m_item.m_shared != null && f.m_item.m_shared.m_name == sharedName);
-        }
-
-        private static bool IsEligibleGroundItem(ItemDrop.ItemData item)
-        {
-            if (item == null || item.m_shared == null) return false;
-
-            object shared = item.m_shared;
-            try
-            {
-                FieldInfo questField = shared.GetType().GetField("m_questItem", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (questField != null && questField.FieldType == typeof(bool) && (bool)questField.GetValue(shared))
-                    return false;
-            }
-            catch { }
-
-            string type = item.m_shared.m_itemType.ToString().ToLowerInvariant();
-            string[] blocked =
-            {
-                "weapon", "bow", "shield", "helmet", "chest", "legs", "shoulder", "hands",
-                "tool", "torch", "utility", "customization", "ammo", "troph", "attach_atgeir"
-            };
-            return !blocked.Any(type.Contains);
-        }
-
-        private void TryStorePickedAmount(Player p, string sharedName, int amount)
-        {
-            if (amount <= 0) return;
-            Inventory playerInv = p.GetInventory();
-            if (playerInv == null) return;
-
-            long id = p.GetPlayerID();
-            List<Container> containers = GetNearbySafeContainers(p, 20f, id);
-            if (containers.Count == 0) return;
-
-            int remaining = amount;
-            foreach (Container c in containers)
-            {
-                if (remaining <= 0) break;
-                Inventory dst = c.GetInventory();
-                if (dst == null) continue;
-
-                ItemDrop.ItemData source = playerInv.GetAllItems().FirstOrDefault(i => i != null && i.m_shared != null && i.m_shared.m_name == sharedName && i.m_stack > 0);
-                if (source == null) break;
-
-                int move = Math.Min(remaining, source.m_stack);
-                ItemDrop.ItemData copy = source.Clone();
-                copy.m_stack = move;
-                if (!dst.CanAddItem(copy, move)) continue;
-                if (dst.AddItem(copy))
-                {
-                    playerInv.RemoveItem(source, move);
-                    remaining -= move;
-                    TrySave(c);
-                }
+                if (after > before)
+                    _pickedFoodReadyAt[sharedName] = Time.time + 2f;
             }
         }
 
@@ -330,12 +258,6 @@ namespace Schachio.HungerPangsPlus
                    n.IndexOf("cart", StringComparison.OrdinalIgnoreCase) < 0 &&
                    n.IndexOf("wagon", StringComparison.OrdinalIgnoreCase) < 0 &&
                    n.IndexOf("ship", StringComparison.OrdinalIgnoreCase) < 0;
-        }
-
-        private void TrySave(Container c)
-        {
-            try { if (_containerSaveMethod != null) _containerSaveMethod.Invoke(c, null); }
-            catch { }
         }
 
         private static int CountBySharedName(Inventory inv, string name)
