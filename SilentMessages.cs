@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.4")]
+    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.5")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class HungerPangsPlusSilentMessagesPlugin : BaseUnityPlugin
     {
@@ -21,7 +21,7 @@ namespace Schachio.HungerPangsPlus
         {
             if(string.IsNullOrEmpty(msg))return false;
             string s=msg.ToLowerInvariant();
-            return s.Contains("cook")||s.Contains("koch")||s.Contains("cooking")||s.Contains("no room")||s.Contains("kein platz")||s.Contains("inventory full")||s.Contains("inventar voll")||s.Contains("stomach is full")||s.Contains("stomach full")||s.Contains("magen ist voll")||s.Contains("dein magen ist voll")||s.Contains("$msg_full");
+            return s.Contains("cook")||s.Contains("koch")||s.Contains("cooking")||s.Contains("kochbar")||s.Contains("kochbaren")||s.Contains("kochbare")||s.Contains("no cookable")||s.Contains("nothing to cook")||s.Contains("no room")||s.Contains("kein platz")||s.Contains("inventory full")||s.Contains("inventar voll")||s.Contains("stomach is full")||s.Contains("stomach full")||s.Contains("magen ist voll")||s.Contains("dein magen ist voll")||s.Contains("$msg_full")||s.Contains("$msg_nocook")||s.Contains("$msg_nocookitems");
         }
     }
     [HarmonyPatch(typeof(Character),"Message",new Type[]{typeof(MessageHud.MessageType),typeof(string),typeof(int),typeof(Sprite)})]
