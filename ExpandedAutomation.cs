@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.expandedautomation", "Hunger Pangs Plus Expanded Automation", "1.3.0")]
+    [BepInPlugin("schachio.hungerpangsplus.expandedautomation", "Hunger Pangs Plus Expanded Automation", "1.3.1")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class ExpandedAutomationPlugin : BaseUnityPlugin
     {
@@ -23,8 +23,8 @@ namespace Schachio.HungerPangsPlus
 
         private void Awake()
         {
-            _expandedEnabled=Config.Bind("Food Slots","ExpandedFoodSlotsEnabled",true,"Enable expanded automatic food-slot filling.");
-            _foodSlots=Config.Bind("Food Slots","FoodSlotCount",3,new ConfigDescription("Number of food slots the automation should fill. Valheim default is 3; maximum is 10.",new AcceptableValueRange<int>(3,10)));
+            _expandedEnabled=Config.Bind("Food Slots","ExpandedFoodSlotsEnabled",true,"Enable automatic filling of all available food slots.");
+            _foodSlots=Config.Bind("Food Slots","MaximumFoodSlots",10,new ConfigDescription("Maximum number of food slots Hunger Pangs Plus will probe and fill. The game/mod decides how many slots really exist. Range: 3 to 10.",new AcceptableValueRange<int>(3,10)));
             _foodCheckSeconds=Config.Bind("Auto Eat","FoodCheckIntervalSeconds",.20f,new ConfigDescription("Seconds between automatic food-slot checks. Lower values react faster.",new AcceptableValueRange<float>(.10f,10f)));
             _pickedFoodDelaySeconds=Config.Bind("Auto Eat","PickedFoodDelaySeconds",2f,new ConfigDescription("Seconds to wait before newly picked-up food may be eaten automatically.",new AcceptableValueRange<float>(0f,60f)));
             _pullFromContainers=Config.Bind("Base Refill","PullFoodFromContainers",true,"Allow expanded food automation to pull missing food types from nearby accessible containers.");
@@ -43,12 +43,12 @@ namespace Schachio.HungerPangsPlus
         private void FillSlots(Player p)
         {
             Inventory inv=p.GetInventory();if(inv==null)return;
-            int target=Mathf.Clamp(_foodSlots.Value,3,10);
-            if(_pullFromContainers.Value)PullFood(p,target);
+            int maxSlots=Mathf.Clamp(_foodSlots.Value,3,10);
+            if(_pullFromContainers.Value)PullFood(p,maxSlots);
             int tries=0;
-            while(tries++<target)
+            while(tries++<maxSlots)
             {
-                List<Player.Food> active=p.GetFoods();if(active==null||active.Count>=target)return;
+                List<Player.Food> active=p.GetFoods();if(active==null||active.Count>=maxSlots)return;
                 var names=new HashSet<string>(active.Where(x=>x!=null&&x.m_item!=null&&x.m_item.m_shared!=null).Select(x=>x.m_item.m_shared.m_name));
                 var foods=inv.GetAllItems().Where(IsFood).Where(Ready).Where(x=>x.m_shared!=null&&!names.Contains(x.m_shared.m_name)).OrderByDescending(Score).ToList();
                 if(foods.Count==0)return;
@@ -60,6 +60,8 @@ namespace Schachio.HungerPangsPlus
                     active=p.GetFoods();
                     if(active!=null&&active.Count>before){_pickedFoodReadyAt.Remove(name);fitted=true;break;}
                 }
+                // No candidate increased the active food count: the actual slot limit is reached
+                // (or Valheim rejected all candidates). Stop probing until the next check.
                 if(!fitted)return;
             }
         }
