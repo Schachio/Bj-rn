@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.6")]
+    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.7")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class HungerPangsPlusSilentMessagesPlugin : BaseUnityPlugin
     {
@@ -21,14 +21,19 @@ namespace Schachio.HungerPangsPlus
         {
             if(string.IsNullOrEmpty(msg))return false;
             string raw=msg.ToLowerInvariant();
-            string s=raw;
-            try{if(Localization.instance!=null)s=Localization.instance.Localize(msg).ToLowerInvariant();}catch{}
-            return Bad(raw)||Bad(s);
+            string localized=raw;
+            try{if(Localization.instance!=null)localized=Localization.instance.Localize(msg).ToLowerInvariant();}catch{}
+            return Bad(raw)||Bad(localized);
         }
         private static bool Bad(string s)
         {
             if(string.IsNullOrEmpty(s))return false;
-            return s.Contains("cook")||s.Contains("koch")||s.Contains("cooking")||s.Contains("kochbar")||s.Contains("kochbaren")||s.Contains("kochbare")||s.Contains("keine kochbaren gegenstände")||s.Contains("keine kochbaren gegenstande")||s.Contains("du hast keine kochbaren")||s.Contains("no cookable")||s.Contains("nothing to cook")||s.Contains("no room")||s.Contains("kein platz")||s.Contains("inventory full")||s.Contains("inventar voll")||s.Contains("stomach is full")||s.Contains("stomach full")||s.Contains("magen ist voll")||s.Contains("dein magen ist voll")||s.Contains("$msg_full")||s.Contains("$msg_nocook")||s.Contains("$msg_nocookitems");
+            return s.Contains("cook")||s.Contains("koch")||s.Contains("cooking")||s.Contains("kochbar")||s.Contains("kochbaren")||s.Contains("kochbare")||
+                   s.Contains("keine kochbaren gegenstände")||s.Contains("keine kochbaren gegenstande")||s.Contains("du hast keine kochbaren")||s.Contains("no cookable")||s.Contains("nothing to cook")||
+                   s.Contains("food")||s.Contains("essen")||s.Contains("eat")||s.Contains("eating")||s.Contains("consume")||s.Contains("consum")||s.Contains("hungr")||s.Contains("hunger")||s.Contains("satt")||
+                   s.Contains("stomach")||s.Contains("magen")||s.Contains("too full")||s.Contains("zu voll")||
+                   s.Contains("no room")||s.Contains("kein platz")||s.Contains("inventory full")||s.Contains("inventar voll")||
+                   s.Contains("$msg_full")||s.Contains("$msg_nocook")||s.Contains("$msg_nocookitems")||s.Contains("$msg_cantconsume")||s.Contains("$msg_toofull");
         }
     }
     [HarmonyPatch(typeof(Character),"Message",new Type[]{typeof(MessageHud.MessageType),typeof(string),typeof(int),typeof(Sprite)})]
