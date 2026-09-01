@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.7")]
+    [BepInPlugin("schachio.hungerpangsplus.silentmessages", "Hunger Pangs Plus Silent Messages", "1.0.8")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class HungerPangsPlusSilentMessagesPlugin : BaseUnityPlugin
     {
@@ -16,6 +16,7 @@ namespace Schachio.HungerPangsPlus
     }
     internal static class HungerPangsMessageGuard
     {
+        [ThreadStatic] internal static bool Suppress;
         internal static bool IsFromAutomation(){try{var frames=new StackTrace().GetFrames();if(frames==null)return false;foreach(var f in frames){var m=f.GetMethod();var t=m!=null?m.DeclaringType:null;if(t==typeof(HungerPangsPlusPlugin)||t==typeof(ExpandedAutomationPlugin))return true;}}catch{}return false;}
         internal static bool IsAutomationSpam(string msg)
         {
@@ -39,11 +40,25 @@ namespace Schachio.HungerPangsPlus
     [HarmonyPatch(typeof(Character),"Message",new Type[]{typeof(MessageHud.MessageType),typeof(string),typeof(int),typeof(Sprite)})]
     internal static class CharacterMessagePatch
     {
-        private static bool Prefix(Character __instance,string msg){if(__instance==Player.m_localPlayer&&(HungerPangsMessageGuard.IsFromAutomation()||HungerPangsMessageGuard.IsAutomationSpam(msg)))return false;return true;}
+        private static bool Prefix(Character __instance,string msg){if(__instance==Player.m_localPlayer&&(HungerPangsMessageGuard.Suppress||HungerPangsMessageGuard.IsFromAutomation()||HungerPangsMessageGuard.IsAutomationSpam(msg)))return false;return true;}
     }
     [HarmonyPatch(typeof(MessageHud),"ShowMessage",new Type[]{typeof(MessageHud.MessageType),typeof(string),typeof(int),typeof(Sprite)})]
     internal static class MessageHudShowMessagePatch
     {
-        private static bool Prefix(string text){return !(HungerPangsMessageGuard.IsFromAutomation()||HungerPangsMessageGuard.IsAutomationSpam(text));}
+        private static bool Prefix(string text){return !(HungerPangsMessageGuard.Suppress||HungerPangsMessageGuard.IsFromAutomation()||HungerPangsMessageGuard.IsAutomationSpam(text));}
+    }
+    [HarmonyPatch(typeof(CookingStation),"Interact")]
+    internal static class CookingStationInteractPatch
+    {
+        private static void Prefix(){HungerPangsMessageGuard.Suppress=true;}
+        private static void Postfix(){HungerPangsMessageGuard.Suppress=false;}
+        private static Exception Finalizer(Exception __exception){HungerPangsMessageGuard.Suppress=false;return __exception;}
+    }
+    [HarmonyPatch(typeof(CookingStation),"UseItem")]
+    internal static class CookingStationUseItemPatch
+    {
+        private static void Prefix(){HungerPangsMessageGuard.Suppress=true;}
+        private static void Postfix(){HungerPangsMessageGuard.Suppress=false;}
+        private static Exception Finalizer(Exception __exception){HungerPangsMessageGuard.Suppress=false;return __exception;}
     }
 }
