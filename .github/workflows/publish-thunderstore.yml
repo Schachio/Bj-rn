@@ -1,0 +1,137 @@
+name: Publish Hunger Pangs Plus to Thunderstore
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 1.6.3'
+        required: true
+        type: string
+      changelog:
+        description: 'Short changelog text for this release'
+        required: false
+        default: 'Maintenance release.'
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Set plugin version for build
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          version = os.environ['VERSION'].strip()
+          if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+              raise SystemExit('Version must be SemVer like 1.6.3')
+          p = pathlib.Path('HungerPangsPlus.cs')
+          text = p.read_text(encoding='utf-8')
+          text2, n = re.subn(r'PluginVersion\s*=\s*"[^"]+"', f'PluginVersion = "{version}"', text, count=1)
+          if n != 1:
+              raise SystemExit('Could not find PluginVersion in HungerPangsPlus.cs')
+          p.write_text(text2, encoding='utf-8')
+          print('Building plugin version', version)
+          PY
+
+      - name: Build DLL
+        run: dotnet build HungerPangsPlus.csproj -c Release
+
+      - name: Download current Thunderstore package as template
+        run: |
+          curl -fL --retry 3 \
+            'https://thunderstore.io/package/download/Schachio/HungerPangsPlus/1.6.2/' \
+            -o template.zip
+          mkdir package
+          unzip -q template.zip -d package
+
+      - name: Prepare package
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANGELOG_TEXT: ${{ inputs.changelog }}
+        run: |
+          mkdir -p package/BepInEx/plugins
+          find package -type f -name 'HungerPangsPlus.dll' -delete
+          cp bin/Release/net48/HungerPangsPlus.dll package/BepInEx/plugins/HungerPangsPlus.dll
+          python - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path('package')
+          manifest = root / 'manifest.json'
+          data = json.loads(manifest.read_text(encoding='utf-8-sig'))
+          data['name'] = 'HungerPangsPlus'
+          data['version_number'] = os.environ['VERSION'].strip()
+          data['website_url'] = 'https://github.com/Schachio/Bj-rn'
+          data['description'] = 'Automatisiert Essen, Kochen, Vorräte, essbare Pflanzen und Schnellleiste in Valheim – mit manuell austauschbaren aktiven Speisen und konfigurierbarer Steuerung.'
+          deps = data.get('dependencies', [])
+          if not any(d.startswith('denikson-BepInExPack_Valheim-') for d in deps):
+              deps.append('denikson-BepInExPack_Valheim-5.4.2333')
+          data['dependencies'] = deps
+          manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          changelog = root / 'CHANGELOG.md'
+          old = changelog.read_text(encoding='utf-8-sig') if changelog.exists() else '# Changelog\n'
+          entry = f"\n## {os.environ['VERSION'].strip()}\n\n- {os.environ['CHANGELOG_TEXT'].strip()}\n"
+          if f"## {os.environ['VERSION'].strip()}" not in old:
+              changelog.write_text('# Changelog\n' + entry + old.removeprefix('# Changelog\n'), encoding='utf-8')
+          PY
+
+      - name: Validate package basics
+        run: |
+          test -f package/manifest.json
+          test -f package/README.md
+          test -f package/icon.png
+          test -f package/BepInEx/plugins/HungerPangsPlus.dll
+          python - <<'PY'
+          from PIL import Image
+          im = Image.open('package/icon.png')
+          if im.size != (256, 256):
+              raise SystemExit(f'icon.png must be 256x256, got {im.size}')
+          print('icon.png:', im.size)
+          PY
+
+      - name: Install Pillow for validation
+        if: ${{ false }}
+        run: true
+
+      - name: Create upload ZIP
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cd package
+          zip -qr "../HungerPangsPlus_${VERSION}_Thunderstore.zip" .
+          cd ..
+          unzip -l "HungerPangsPlus_${VERSION}_Thunderstore.zip"
+
+      - name: Publish to Thunderstore
+        uses: GreenTF/upload-thunderstore-package@v4.3
+        with:
+          namespace: Schachio
+          name: HungerPangsPlus
+          description: Automatisiert Essen, Kochen, Vorräte, essbare Pflanzen und Schnellleiste in Valheim – mit manuell austauschbaren aktiven Speisen und konfigurierbarer Steuerung.
+          token: ${{ secrets.THUNDERSTORE_TOKEN }}
+          version: ${{ inputs.version }}
+          community: Valheim
+          repo: valheim.thunderstore.io
+          categories: |
+            mods
+          deps: denikson-BepInExPack_Valheim@5.4.2333
+          file: HungerPangsPlus_${{ inputs.version }}_Thunderstore.zip
+          website: https://github.com/Schachio/Bj-rn
+
+      - name: Upload package ZIP to GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: HungerPangsPlus-${{ inputs.version }}-Thunderstore
+          path: HungerPangsPlus_${{ inputs.version }}_Thunderstore.zip
