@@ -8,265 +8,64 @@ using UnityEngine;
 
 namespace Schachio.HungerPangsPlus
 {
-    [BepInPlugin("schachio.hungerpangsplus.expandedautomation", "Hunger Pangs Plus Expanded Automation", "1.1.0")]
+    [BepInPlugin("schachio.hungerpangsplus.expandedautomation", "Hunger Pangs Plus Expanded Automation", "1.2.0")]
     [BepInDependency(HungerPangsPlusPlugin.PluginGuid)]
     public sealed class ExpandedAutomationPlugin : BaseUnityPlugin
     {
         private HungerPangsPlusPlugin _main;
-        private FieldInfo _foodIconsField;
         private MethodInfo _pickupMethod;
         private float _nextFoodCheck;
         private float _nextGroundCheck;
-        private readonly Dictionary<string, float> _pickedFoodReadyAt = new Dictionary<string, float>();
+        private readonly Dictionary<string,float> _pickedFoodReadyAt=new Dictionary<string,float>();
 
-        private void Start()
+        private void Start(){_main=UnityEngine.Object.FindObjectOfType<HungerPangsPlusPlugin>();_pickupMethod=typeof(ItemDrop).GetMethod("Pickup",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic,null,new Type[]{typeof(Humanoid)},null);if(_pickupMethod==null)_pickupMethod=typeof(ItemDrop).GetMethods(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic).FirstOrDefault(m=>m.Name=="Pickup"&&m.GetParameters().Length==1);ApplyDefaults();}
+        private void ApplyDefaults(){if(_main==null)return;try{var f=typeof(HungerPangsPlusPlugin).GetField("_manualFoodPauseSeconds",BindingFlags.Instance|BindingFlags.NonPublic);var p=f!=null?f.GetValue(_main) as ConfigEntry<float>:null;if(p!=null)p.Value=3f;f=typeof(HungerPangsPlusPlugin).GetField("_foodTypesToStock",BindingFlags.Instance|BindingFlags.NonPublic);var s=f!=null?f.GetValue(_main) as ConfigEntry<int>:null;if(s!=null)s.Value=10;_main.Config.Save();}catch(Exception e){Logger.LogDebug(e.Message);}}
+        private void Update(){Player p=Player.m_localPlayer;if(p==null||p.IsDead())return;float n=Time.time;if(n>=_nextGroundCheck){_nextGroundCheck=n+.25f;PickupFood(p);}if(n>=_nextFoodCheck){_nextFoodCheck=n+.20f;FillSlots(p);}}
+        private static bool IsFood(ItemDrop.ItemData i){return i!=null&&i.m_shared!=null&&(i.m_shared.m_food>0f||i.m_shared.m_foodStamina>0f||i.m_shared.m_foodEitr>0f);}
+        private static float Score(ItemDrop.ItemData i){return IsFood(i)?i.m_shared.m_food+i.m_shared.m_foodStamina+i.m_shared.m_foodEitr:0f;}
+        private bool Ready(ItemDrop.ItemData i){float t;return i!=null&&i.m_shared!=null&&(!_pickedFoodReadyAt.TryGetValue(i.m_shared.m_name,out t)||Time.time>=t);}
+
+        private void FillSlots(Player p)
         {
-            _main = UnityEngine.Object.FindObjectOfType<HungerPangsPlusPlugin>();
-            _foodIconsField = typeof(Hud).GetField("m_foodIcons", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            _pickupMethod = typeof(ItemDrop).GetMethod("Pickup", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(Humanoid) }, null);
-            if (_pickupMethod == null)
-                _pickupMethod = typeof(ItemDrop).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    .FirstOrDefault(m => m.Name == "Pickup" && m.GetParameters().Length == 1);
-            ApplyRequestedDefaults();
-        }
-
-        private void ApplyRequestedDefaults()
-        {
-            if (_main == null) return;
-            try
+            Inventory inv=p.GetInventory();if(inv==null)return;
+            PullFood(p,10);
+            int tries=0;
+            while(tries++<10)
             {
-                FieldInfo pauseField = typeof(HungerPangsPlusPlugin).GetField("_manualFoodPauseSeconds", BindingFlags.Instance | BindingFlags.NonPublic);
-                ConfigEntry<float> pause = pauseField != null ? pauseField.GetValue(_main) as ConfigEntry<float> : null;
-                if (pause != null && Math.Abs(pause.Value - 3f) > 0.001f)
-                    pause.Value = 3f;
-
-                FieldInfo stockField = typeof(HungerPangsPlusPlugin).GetField("_foodTypesToStock", BindingFlags.Instance | BindingFlags.NonPublic);
-                ConfigEntry<int> stock = stockField != null ? stockField.GetValue(_main) as ConfigEntry<int> : null;
-                if (stock != null && stock.Value < 10)
-                    stock.Value = 10;
-
-                _main.Config.Save();
-            }
-            catch (Exception e)
-            {
-                Logger.LogDebug("Could not apply expanded defaults: " + e.Message);
-            }
-        }
-
-        private void Update()
-        {
-            Player p = Player.m_localPlayer;
-            if (p == null || p.IsDead()) return;
-
-            float now = Time.time;
-            if (now >= _nextGroundCheck)
-            {
-                _nextGroundCheck = now + 0.5f;
-                TryPickupEdibleGroundItems(p);
-            }
-
-            if (now >= _nextFoodCheck)
-            {
-                _nextFoodCheck = now + 0.5f;
-                TryFillDynamicFoodSlots(p);
-            }
-        }
-
-        private int GetFoodSlotCapacity(Player p)
-        {
-            int capacity = 3;
-            try
-            {
-                Hud hud = Hud.instance;
-                if (hud != null && _foodIconsField != null)
+                List<Player.Food> active=p.GetFoods();if(active==null||active.Count>=10)return;
+                var names=new HashSet<string>(active.Where(x=>x!=null&&x.m_item!=null&&x.m_item.m_shared!=null).Select(x=>x.m_item.m_shared.m_name));
+                var foods=inv.GetAllItems().Where(IsFood).Where(Ready).Where(x=>x.m_shared!=null&&!names.Contains(x.m_shared.m_name)).OrderByDescending(Score).ToList();
+                if(foods.Count==0)return;
+                bool fitted=false;
+                foreach(var food in foods)
                 {
-                    Array icons = _foodIconsField.GetValue(hud) as Array;
-                    if (icons != null && icons.Length > 0)
-                        capacity = icons.Length;
+                    int before=active.Count;string name=food.m_shared.m_name;
+                    try{p.ConsumeItem(inv,food,false);}catch{continue;}
+                    active=p.GetFoods();
+                    if(active!=null&&active.Count>before){_pickedFoodReadyAt.Remove(name);fitted=true;break;}
                 }
-            }
-            catch { }
-
-            try
-            {
-                List<Player.Food> foods = p.GetFoods();
-                if (foods != null)
-                    capacity = Math.Max(capacity, foods.Count);
-            }
-            catch { }
-
-            return Mathf.Clamp(capacity, 1, 10);
-        }
-
-        private static bool IsFood(ItemDrop.ItemData item)
-        {
-            return item != null && item.m_shared != null &&
-                   (item.m_shared.m_food > 0f || item.m_shared.m_foodStamina > 0f || item.m_shared.m_foodEitr > 0f);
-        }
-
-        private static float FoodScore(ItemDrop.ItemData item)
-        {
-            if (!IsFood(item)) return 0f;
-            return item.m_shared.m_food + item.m_shared.m_foodStamina + item.m_shared.m_foodEitr;
-        }
-
-        private void TryFillDynamicFoodSlots(Player p)
-        {
-            int capacity = GetFoodSlotCapacity(p);
-            List<Player.Food> active = p.GetFoods();
-            if (active == null || active.Count >= capacity) return;
-
-            Inventory inv = p.GetInventory();
-            if (inv == null) return;
-
-            PullExtraFoodFromNearbyContainers(p, capacity);
-
-            int safety = 0;
-            while (active.Count < capacity && safety++ < 10)
-            {
-                HashSet<string> activeNames = new HashSet<string>(active
-                    .Where(f => f != null && f.m_item != null && f.m_item.m_shared != null)
-                    .Select(f => f.m_item.m_shared.m_name));
-
-                float now = Time.time;
-                ItemDrop.ItemData candidate = inv.GetAllItems()
-                    .Where(IsFood)
-                    .Where(i => i.m_shared != null && !activeNames.Contains(i.m_shared.m_name))
-                    .Where(i => !_pickedFoodReadyAt.ContainsKey(i.m_shared.m_name) || now >= _pickedFoodReadyAt[i.m_shared.m_name])
-                    .OrderByDescending(FoodScore)
-                    .FirstOrDefault();
-
-                if (candidate == null) break;
-
-                int before = active.Count;
-                string name = candidate.m_shared.m_name;
-                try { p.ConsumeItem(inv, candidate, false); }
-                catch (Exception e) { Logger.LogDebug("Expanded auto-eat skipped: " + e.Message); break; }
-
-                active = p.GetFoods();
-                if (active == null || active.Count <= before) break;
-                _pickedFoodReadyAt.Remove(name);
+                if(!fitted)return;
             }
         }
 
-        private void PullExtraFoodFromNearbyContainers(Player p, int capacity)
+        private void PullFood(Player p,int target)
         {
-            Inventory inv = p.GetInventory();
-            if (inv == null) return;
-
-            List<Player.Food> active = p.GetFoods();
-            HashSet<string> known = new HashSet<string>();
-            if (active != null)
-                foreach (Player.Food f in active)
-                    if (f != null && f.m_item != null && f.m_item.m_shared != null)
-                        known.Add(f.m_item.m_shared.m_name);
-            foreach (ItemDrop.ItemData i in inv.GetAllItems())
-                if (IsFood(i) && i.m_shared != null)
-                    known.Add(i.m_shared.m_name);
-
-            int needTypes = Math.Max(0, capacity - known.Count);
-            if (needTypes <= 0) return;
-
-            long id = p.GetPlayerID();
-            List<Container> containers = GetNearbySafeContainers(p, 20f, id);
-            List<ItemDrop.ItemData> options = new List<ItemDrop.ItemData>();
-            foreach (Container c in containers)
-            {
-                Inventory src = c.GetInventory();
-                if (src != null)
-                    options.AddRange(src.GetAllItems().Where(IsFood));
-            }
-
-            foreach (ItemDrop.ItemData option in options
-                .Where(i => i != null && i.m_shared != null && !known.Contains(i.m_shared.m_name))
-                .GroupBy(i => i.m_shared.m_name)
-                .Select(g => g.OrderByDescending(FoodScore).First())
-                .OrderByDescending(FoodScore)
-                .Take(needTypes)
-                .ToList())
-            {
-                string name = option.m_shared.m_name;
-                foreach (Container c in containers)
-                {
-                    Inventory src = c.GetInventory();
-                    if (src == null) continue;
-                    ItemDrop.ItemData source = src.GetAllItems().FirstOrDefault(i => i != null && i.m_shared != null && i.m_shared.m_name == name && i.m_stack > 0);
-                    if (source == null) continue;
-                    ItemDrop.ItemData copy = source.Clone();
-                    copy.m_stack = 1;
-                    if (!inv.CanAddItem(copy, 1)) return;
-                    if (inv.AddItem(copy))
-                    {
-                        src.RemoveItem(source, 1);
-                        known.Add(name);
-                    }
-                    break;
-                }
-            }
+            Inventory inv=p.GetInventory();if(inv==null)return;
+            var known=new HashSet<string>();var active=p.GetFoods();if(active!=null)foreach(var f in active)if(f!=null&&f.m_item!=null&&f.m_item.m_shared!=null)known.Add(f.m_item.m_shared.m_name);foreach(var i in inv.GetAllItems())if(IsFood(i)&&i.m_shared!=null)known.Add(i.m_shared.m_name);
+            int need=Math.Max(0,target-known.Count);if(need==0)return;var cs=Containers(p,20f,p.GetPlayerID());
+            var options=cs.SelectMany(c=>c.GetInventory()!=null?c.GetInventory().GetAllItems().Where(IsFood):Enumerable.Empty<ItemDrop.ItemData>()).Where(i=>i!=null&&i.m_shared!=null&&!known.Contains(i.m_shared.m_name)).GroupBy(i=>i.m_shared.m_name).Select(g=>g.OrderByDescending(Score).First()).OrderByDescending(Score).Take(need).ToList();
+            foreach(var o in options){foreach(var c in cs){var src=c.GetInventory();if(src==null)continue;var item=src.GetAllItems().FirstOrDefault(i=>i!=null&&i.m_shared!=null&&i.m_shared.m_name==o.m_shared.m_name&&i.m_stack>0);if(item==null)continue;var copy=item.Clone();copy.m_stack=1;if(inv.CanAddItem(copy,1)&&inv.AddItem(copy)){src.RemoveItem(item,1);known.Add(o.m_shared.m_name);}break;}}
         }
 
-        private void TryPickupEdibleGroundItems(Player p)
+        private void PickupFood(Player p)
         {
-            Inventory inv = p.GetInventory();
-            if (inv == null || _pickupMethod == null) return;
-
-            const float radius = 3.5f;
-            List<ItemDrop> drops = UnityEngine.Object.FindObjectsOfType<ItemDrop>()
-                .Where(d => d != null && d.gameObject != null && d.gameObject.activeInHierarchy && d.m_itemData != null)
-                .Where(d => Vector3.Distance(p.transform.position, d.transform.position) <= radius)
-                .Where(d => IsFood(d.m_itemData))
-                .OrderBy(d => Vector3.Distance(p.transform.position, d.transform.position))
-                .ToList();
-
-            foreach (ItemDrop drop in drops)
-            {
-                if (drop == null || drop.m_itemData == null || drop.m_itemData.m_shared == null) continue;
-                string sharedName = drop.m_itemData.m_shared.m_name;
-                int before = CountBySharedName(inv, sharedName);
-
-                try { _pickupMethod.Invoke(drop, new object[] { p }); }
-                catch (Exception e) { Logger.LogDebug("Ground food pickup skipped: " + e.Message); continue; }
-
-                int after = CountBySharedName(inv, sharedName);
-                if (after > before)
-                    _pickedFoodReadyAt[sharedName] = Time.time + 2f;
-            }
+            Inventory inv=p.GetInventory();if(inv==null||_pickupMethod==null)return;
+            var drops=UnityEngine.Object.FindObjectsOfType<ItemDrop>().Where(d=>d!=null&&d.gameObject!=null&&d.gameObject.activeInHierarchy&&d.m_itemData!=null&&Vector3.Distance(p.transform.position,d.transform.position)<=3.5f&&IsFood(d.m_itemData)).OrderBy(d=>Vector3.Distance(p.transform.position,d.transform.position)).ToList();
+            foreach(var d in drops){string name=d.m_itemData.m_shared.m_name;int before=Count(inv,name);try{_pickupMethod.Invoke(d,new object[]{p});}catch{continue;}if(Count(inv,name)>before)_pickedFoodReadyAt[name]=Time.time+2f;}
         }
-
-        private List<Container> GetNearbySafeContainers(Player p, float radius, long playerId)
-        {
-            return UnityEngine.Object.FindObjectsOfType<Container>()
-                .Where(c => c != null && c.gameObject != null)
-                .Where(c => Vector3.Distance(p.transform.position, c.transform.position) <= radius)
-                .Where(IsSafeStorage)
-                .Where(c => CanAccess(c, playerId))
-                .OrderBy(c => Vector3.Distance(p.transform.position, c.transform.position))
-                .ToList();
-        }
-
-        private static bool CanAccess(Container c, long playerId)
-        {
-            try { return c.CheckAccess(playerId); }
-            catch { return false; }
-        }
-
-        private static bool IsSafeStorage(Container c)
-        {
-            string n = c.gameObject.name ?? "";
-            return n.IndexOf("tombstone", StringComparison.OrdinalIgnoreCase) < 0 &&
-                   n.IndexOf("grave", StringComparison.OrdinalIgnoreCase) < 0 &&
-                   n.IndexOf("cart", StringComparison.OrdinalIgnoreCase) < 0 &&
-                   n.IndexOf("wagon", StringComparison.OrdinalIgnoreCase) < 0 &&
-                   n.IndexOf("ship", StringComparison.OrdinalIgnoreCase) < 0;
-        }
-
-        private static int CountBySharedName(Inventory inv, string name)
-        {
-            int count = 0;
-            foreach (ItemDrop.ItemData i in inv.GetAllItems())
-                if (i != null && i.m_shared != null && i.m_shared.m_name == name)
-                    count += i.m_stack;
-            return count;
-        }
+        private List<Container> Containers(Player p,float r,long id){return UnityEngine.Object.FindObjectsOfType<Container>().Where(c=>c!=null&&c.gameObject!=null&&Vector3.Distance(p.transform.position,c.transform.position)<=r&&Safe(c)&&Access(c,id)).OrderBy(c=>Vector3.Distance(p.transform.position,c.transform.position)).ToList();}
+        private static bool Access(Container c,long id){try{return c.CheckAccess(id);}catch{return false;}}
+        private static bool Safe(Container c){string n=c.gameObject.name??"";return n.IndexOf("tombstone",StringComparison.OrdinalIgnoreCase)<0&&n.IndexOf("grave",StringComparison.OrdinalIgnoreCase)<0&&n.IndexOf("cart",StringComparison.OrdinalIgnoreCase)<0&&n.IndexOf("wagon",StringComparison.OrdinalIgnoreCase)<0&&n.IndexOf("ship",StringComparison.OrdinalIgnoreCase)<0;}
+        private static int Count(Inventory inv,string n){int x=0;foreach(var i in inv.GetAllItems())if(i!=null&&i.m_shared!=null&&i.m_shared.m_name==n)x+=i.m_stack;return x;}
     }
 }
