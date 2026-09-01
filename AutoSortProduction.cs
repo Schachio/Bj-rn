@@ -16,7 +16,7 @@ namespace ValheimAutoSortProduction
     {
         public const string PluginGuid = "de.valheim.autosortproduction";
         public const string PluginName = "AutoSort Production";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.1.1";
 
         internal static AutoSortProductionPlugin Instance = null!;
         internal static ManualLogSource Log = null!;
@@ -43,8 +43,13 @@ namespace ValheimAutoSortProduction
                 "Master switch for the mod.");
             StorageRadius = Config.Bind("General", "StorageRadius", 100f,
                 "Radius in metres around the producing station in which chests are searched.");
-            PickupDelaySeconds = Config.Bind("General", "PickupDelaySeconds", 5f,
+            PickupDelaySeconds = Config.Bind("General", "PickupDelaySeconds", 1f,
                 "How long a production output must lie in the world before AutoSort attempts to store it.");
+            // Migrate the defaults used by the two earlier test builds so an existing config
+            // immediately adopts the new one-second behaviour. Custom values are preserved.
+            if (Math.Abs(PickupDelaySeconds.Value - 5f) < 0.001f ||
+                Math.Abs(PickupDelaySeconds.Value - 20f) < 0.001f)
+                PickupDelaySeconds.Value = 1f;
             CaptureRadius = Config.Bind("Advanced", "CaptureRadius", 8f,
                 "Small radius used only to identify the world item that a production station just spawned.");
             RequireMatchingItem = Config.Bind("Sorting", "RequireMatchingItem", true,
@@ -112,6 +117,7 @@ namespace ValheimAutoSortProduction
 
         private IEnumerator CaptureSpawnedOutput(SpawnCaptureState state)
         {
+            // Give Unity/ZNetScene a couple of frames to instantiate the world object.
             var deadline = Time.time + 1.0f;
             while (Time.time < deadline)
             {
@@ -133,7 +139,6 @@ namespace ValheimAutoSortProduction
                     capturedStack += Math.Max(1, itemDrop.m_itemData?.m_stack ?? 1);
 
                     Debug($"Captured production output {state.OutputPrefabName} stack={itemDrop.m_itemData?.m_stack ?? 1} from {state.StationPrefabName}");
-                    if (capturedStack >= state.ExpectedStack) yield break;
                 }
 
                 if (capturedStack > 0) yield break;
@@ -182,6 +187,7 @@ namespace ValheimAutoSortProduction
             var piece = __instance.GetComponent<Piece>();
             var creator = piece != null ? piece.GetCreator() : 0L;
 
+            // Snapshot only matching world items near the station before vanilla Spawn runs.
             var existing = UnityEngine.Object.FindObjectsOfType<ItemDrop>()
                 .Where(x => x != null && x.gameObject != null)
                 .Where(x => Vector3.Distance(x.transform.position, sourcePosition) <= AutoSortProductionPlugin.CaptureRadius.Value)
@@ -214,43 +220,60 @@ namespace ValheimAutoSortProduction
         private Vector3 _sourcePosition;
         private long _creatorId;
         private float _eligibleAt;
-        private bool _attempting;
+        private float _retryAt;
+        private static int _lastSweepFrame = -1;
 
         internal void Initialize(Vector3 sourcePosition, long creatorId, float eligibleAt)
         {
             _sourcePosition = sourcePosition;
             _creatorId = creatorId;
             _eligibleAt = eligibleAt;
+            _retryAt = eligibleAt;
         }
 
         private void Update()
         {
-            if (_attempting || Time.time < _eligibleAt) return;
-            _attempting = true;
-            StartCoroutine(TryStoreAfterPhysicsSettles());
+            if (Time.time < _eligibleAt || Time.time < _retryAt) return;
+
+            // Only one tagged output starts the sweep per frame. The sweep then processes
+            // every eligible production output at once instead of moving items one by one.
+            if (_lastSweepFrame == Time.frameCount) return;
+            _lastSweepFrame = Time.frameCount;
+            SweepAllEligibleOutputs();
         }
 
-        private IEnumerator TryStoreAfterPhysicsSettles()
+        private static void SweepAllEligibleOutputs()
         {
-            yield return null;
+            var tags = UnityEngine.Object.FindObjectsOfType<ProductionOutputTag>()
+                .Where(t => t != null && Time.time >= t._eligibleAt && Time.time >= t._retryAt)
+                .ToList();
 
+            foreach (var tag in tags)
+                tag.TryStoreNow();
+        }
+
+        private void TryStoreNow()
+        {
             var drop = GetComponent<ItemDrop>();
             if (drop == null || drop.m_itemData == null)
             {
                 Destroy(this);
-                yield break;
+                return;
             }
 
             var itemNView = GetComponent<ZNetView>();
             if (itemNView != null && itemNView.IsValid() && !itemNView.IsOwner())
             {
-                _attempting = false;
-                yield break;
+                _retryAt = Time.time + 1f;
+                return;
             }
+
+            var stack = drop.m_itemData.m_stack;
+            var itemName = drop.m_itemData.m_shared.m_name;
 
             if (StorageRouter.TryStore(drop, _sourcePosition, _creatorId))
             {
-                AutoSortProductionPlugin.Debug($"Stored {drop.m_itemData.m_stack}x {drop.m_itemData.m_shared.m_name}");
+                AutoSortProductionPlugin.Debug($"Batch stored {stack}x {itemName}");
 
                 if (itemNView != null && itemNView.IsValid() && ZNetScene.instance != null)
                     ZNetScene.instance.Destroy(gameObject);
@@ -259,8 +282,9 @@ namespace ValheimAutoSortProduction
             }
             else
             {
-                _eligibleAt = Time.time + 5f;
-                _attempting = false;
+                // Retry quickly so a temporarily busy/full chest does not leave outputs
+                // sitting around for several seconds.
+                _retryAt = Time.time + 1f;
             }
         }
     }
@@ -289,6 +313,7 @@ namespace ValheimAutoSortProduction
 
             foreach (var candidate in containers)
             {
+                // Clone before insertion; never hand the live world ItemData object to a chest.
                 var clone = item.Clone();
                 clone.m_stack = item.m_stack;
                 if (!candidate.Inventory.CanAddItem(clone, clone.m_stack)) continue;
@@ -313,6 +338,7 @@ namespace ValheimAutoSortProduction
         {
             if (container == null || container.GetInventory() == null) return false;
 
+            // Do not modify a chest while another player has it open.
             try
             {
                 var nview = container.GetComponent<ZNetView>() ?? container.GetComponentInParent<ZNetView>();
@@ -324,6 +350,7 @@ namespace ValheimAutoSortProduction
             }
             catch
             {
+                // Compatibility first: if another mod/game version changes this flag, don't crash routing.
             }
 
             return true;
