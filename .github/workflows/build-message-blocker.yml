@@ -1,0 +1,25 @@
+name: Build Food Cooking Message Blocker
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'FoodCookingMessageBlocker/**'
+      - '.github/workflows/build-message-blocker.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: dotnet build FoodCookingMessageBlocker/FoodCookingMessageBlocker.csproj -c Release
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: FoodCookingMessageBlocker
+          path: FoodCookingMessageBlocker/bin/Release/net48/FoodCookingMessageBlocker.dll
